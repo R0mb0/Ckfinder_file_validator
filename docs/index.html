@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Check files for ckfinder</title>
+
+    <!-- Tailwind CSS for styling (handles responsiveness and dark/light mode) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'media', // Automatically uses system preference
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            blue: '#3b82f6',
+                            green: '#22c55e',
+                            red: '#ef4444',
+                            orange: '#f97316'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Phosphor Icons for modern UI icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+
+    <!-- PDF-lib for PDF manipulation and checking -->
+    <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+
+    <!-- JSZip for zipping files -->
+    <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
+
+    <style>
+        /* Custom scrollbar for the table container */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background-color: #cbd5e1;
+            border-radius: 20px;
+        }
+
+        .dark .custom-scrollbar::-webkit-scrollbar-thumb {
+            background-color: #475569;
+        }
+    </style>
+</head>
+<body class="bg-slate-100 dark:bg-slate-900 min-h-screen flex items-center justify-center p-4 md:p-8 font-sans text-slate-800 dark:text-slate-200 transition-colors duration-300">
+
+    <!-- Main Workspace Container -->
+    <main class="w-full max-w-5xl bg-white dark:bg-slate-800 rounded-3xl shadow-2xl overflow-hidden flex flex-col transition-colors duration-300">
+
+        <!-- Header -->
+        <header class="p-8 pb-4 text-center">
+            <h1 class="text-3xl md:text-4xl font-extrabold tracking-tight text-slate-900 dark:text-white">
+                Check files for ckfinder
+            </h1>
+            <p class="mt-2 text-slate-500 dark:text-slate-400">Validate, standardize and repair PDFs, Images, and Office Documents before uploading.</p>
+        </header>
+
+        <!-- View 1: Drag & Drop Zone -->
+        <section id="view-upload" class="p-8 flex-grow flex flex-col items-center justify-center">
+            <div id="drop-zone" class="w-full border-4 border-dashed border-slate-300 dark:border-slate-600 rounded-2xl p-12 flex flex-col items-center justify-center cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700/50 hover:border-brand-blue transition-all duration-300 group">
+                <i class="ph ph-cloud-arrow-up text-6xl text-slate-400 group-hover:text-brand-blue transition-colors mb-4"></i>
+                <h3 class="text-xl font-semibold mb-2">Drag and drop files here</h3>
+                <p class="text-sm text-slate-500 dark:text-slate-400 mb-6 text-center">or click to browse from your computer.<br>Supports PDFs, Images (JPG, PNG), and Office Docs (DOCX, XLSX, ZIP).</p>
+                <button class="bg-brand-blue hover:bg-blue-600 text-white px-6 py-2 rounded-full font-medium transition-colors shadow-md shadow-blue-500/30">
+                    Select Files
+                </button>
+                <!-- Hidden Input -->
+                <input type="file" id="file-input" multiple class="hidden">
+            </div>
+        </section>
+
+        <!-- View 2: Progress Bar -->
+        <section id="view-progress" class="p-12 flex-grow flex flex-col items-center justify-center hidden">
+            <h3 class="text-2xl font-bold mb-8 text-slate-700 dark:text-slate-200" id="progress-text">Processing files... 0%</h3>
+            <div class="w-full max-w-2xl bg-slate-200 dark:bg-slate-700 rounded-full h-6 mb-4 overflow-hidden relative shadow-inner">
+                <div id="progress-bar" class="bg-brand-blue h-6 rounded-full transition-all duration-300 ease-out w-0 flex items-center justify-center relative overflow-hidden">
+                    <!-- Shimmer effect -->
+                    <div class="absolute inset-0 bg-white/20 w-full h-full transform -skew-x-12 animate-pulse"></div>
+                </div>
+            </div>
+            <p class="text-slate-500 dark:text-slate-400" id="progress-detail">Starting...</p>
+        </section>
+
+        <!-- View 3: Results Table -->
+        <section id="view-results" class="p-8 hidden flex-col h-full">
+            <div class="overflow-x-auto custom-scrollbar border border-slate-200 dark:border-slate-700 rounded-xl mb-6 shadow-sm">
+                <table class="w-full text-left border-collapse">
+                    <thead>
+                        <tr class="bg-slate-50 dark:bg-slate-900/50 text-slate-600 dark:text-slate-300 text-sm uppercase tracking-wider whitespace-nowrap">
+                            <th class="px-6 py-4 font-semibold w-16 text-center">Icon</th>
+                            <th class="px-6 py-4 font-semibold">File Name</th>
+                            <th class="px-6 py-4 font-semibold">Status</th>
+                            <th class="px-6 py-4 font-semibold">Details</th>
+                            <th class="px-6 py-4 font-semibold text-right">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="results-table-body" class="divide-y divide-slate-200 dark:divide-slate-700">
+                        <!-- Rows will be injected here by JS -->
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Legend -->
+            <div class="flex flex-wrap items-center gap-6 mb-8 text-sm bg-slate-50 dark:bg-slate-900/50 p-4 rounded-xl border border-slate-200 dark:border-slate-700">
+                <span class="font-semibold mr-2">Legend:</span>
+                <div class="flex items-center gap-2">
+                    <div class="w-3 h-3 rounded-full bg-slate-400"></div>
+                    <span><strong class="text-slate-500">Fine:</strong> File is untouched (format not supported for deep check).</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <div class="w-3 h-3 rounded-full bg-brand-blue"></div>
+                    <span><strong class="text-brand-blue">Standardized:</strong> File successfully rebuilt/sanitized for maximum compatibility.</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <div class="w-3 h-3 rounded-full bg-brand-green"></div>
+                    <span><strong class="text-brand-green">Repaired:</strong> Corrupted structure successfully fixed.</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <div class="w-3 h-3 rounded-full bg-brand-red"></div>
+                    <span><strong class="text-brand-red">Invalid:</strong> File unreadable, corrupted, or unfixable.</span>
+                </div>
+            </div>
+
+            <!-- Bottom Buttons -->
+            <div class="flex flex-col sm:flex-row justify-between items-center gap-4 mt-auto">
+                <button id="btn-reset" class="w-full sm:w-auto flex items-center justify-center gap-2 bg-brand-orange hover:bg-orange-600 text-white px-6 py-3 rounded-xl font-semibold transition-all shadow-lg shadow-orange-500/30">
+                    <i class="ph ph-arrow-counter-clockwise text-xl"></i>
+                    Check other files
+                </button>
+                <button id="btn-download-all" class="w-full sm:w-auto flex items-center justify-center gap-2 bg-brand-green hover:bg-green-600 text-white px-6 py-3 rounded-xl font-semibold transition-all shadow-lg shadow-green-500/30">
+                    <i class="ph ph-file-zip text-xl"></i>
+                    Download fixed files (.zip)
+                </button>
+            </div>
+        </section>
+
+    </main>
+
+    <script>
+        // --- DOM Elements ---
+        const viewUpload = document.getElementById('view-upload');
+        const viewProgress = document.getElementById('view-progress');
+        const viewResults = document.getElementById('view-results');
+
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+
+        const progressBar = document.getElementById('progress-bar');
+        const progressText = document.getElementById('progress-text');
+        const progressDetail = document.getElementById('progress-detail');
+
+        const resultsTableBody = document.getElementById('results-table-body');
+        const btnReset = document.getElementById('btn-reset');
+        const btnDownloadAll = document.getElementById('btn-download-all');
+
+        // --- State ---
+        let processedFiles = [];
+
+        // --- Event Listeners ---
+        dropZone.addEventListener('click', () => fileInput.click());
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('border-brand-blue', 'bg-slate-50', 'dark:bg-slate-700/50');
+        });
+
+        ['dragleave', 'dragend'].forEach(type => {
+            dropZone.addEventListener(type, (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('border-brand-blue', 'bg-slate-50', 'dark:bg-slate-700/50');
+            });
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('border-brand-blue', 'bg-slate-50', 'dark:bg-slate-700/50');
+            if (e.dataTransfer.files.length > 0) handleFiles(e.dataTransfer.files);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) handleFiles(e.target.files);
+        });
+
+        btnReset.addEventListener('click', resetApp);
+        btnDownloadAll.addEventListener('click', downloadAllAsZip);
+
+
+        // --- Core Logic ---
+
+        async function handleFiles(files) {
+            viewUpload.classList.add('hidden');
+            viewProgress.classList.remove('hidden');
+
+            const totalFiles = files.length;
+            processedFiles = [];
+            resultsTableBody.innerHTML = '';
+
+            for (let i = 0; i < totalFiles; i++) {
+                const file = files[i];
+                const percentage = Math.round((i / totalFiles) * 100);
+                updateProgress(percentage, `Analyzing ${file.name}...`);
+
+                const result = await processSingleFile(file);
+                processedFiles.push(result);
+            }
+
+            updateProgress(100, "Completing...");
+
+            setTimeout(() => {
+                buildResultsTable();
+                viewProgress.classList.add('hidden');
+                viewResults.classList.remove('hidden');
+                viewResults.classList.add('flex');
+            }, 800);
+        }
+
+        function updateProgress(percentage, text) {
+            progressBar.style.width = `${percentage}%`;
+            progressText.innerText = `Processing files... ${percentage}%`;
+            progressDetail.innerText = text;
+        }
+
+        async function processSingleFile(file) {
+            const result = {
+                name: file.name,
+                originalFile: file,
+                finalBlob: file,
+                status: 'fine',
+                message: ''
+            };
+
+            if (file.size === 0) {
+                result.status = 'invalid';
+                result.message = 'The file is empty (0 bytes).';
+                return result;
+            }
+
+            const nameLow = file.name.toLowerCase();
+            const isPdf = nameLow.endsWith('.pdf');
+            const isImage = nameLow.match(/\.(jpg|jpeg|png|webp)$/);
+            const isArchive = nameLow.match(/\.(zip|docx|xlsx|pptx)$/);
+
+            try {
+                if (isPdf) {
+                    await handlePdfValidation(file, result);
+                } else if (isImage) {
+                    await handleImageValidation(file, result);
+                } else if (isArchive) {
+                    await handleArchiveValidation(file, result);
+                } else {
+                    result.status = 'fine';
+                    result.message = 'General file bypassed deep structural check.';
+                }
+            } catch (err) {
+                result.status = 'invalid';
+                result.message = err.message || 'File processing failed due to severe corruption.';
+            }
+
+            return result;
+        }
+
+        // --- Specific File Handlers ---
+
+        async function handlePdfValidation(file, result) {
+            const arrayBuffer = await file.arrayBuffer();
+            const uint8 = new Uint8Array(arrayBuffer);
+
+            const startsWithPdf = uint8.length >= 5 && uint8[0] === 0x25 && uint8[1] === 0x50 && uint8[2] === 0x44 && uint8[3] === 0x46 && uint8[4] === 0x2D;
+            let endStr = '';
+            const startIdx = Math.max(0, uint8.length - 1024);
+            for (let i = startIdx; i < uint8.length; i++) endStr += String.fromCharCode(uint8[i]);
+
+            const hasEof = endStr.includes('%%EOF');
+            const hasStartXref = endStr.includes('startxref');
+            const eofIsNearEnd = endStr.lastIndexOf('%%EOF') >= endStr.length - 40;
+
+            let obviousCorruption = !startsWithPdf || !hasEof || !hasStartXref || !eofIsNearEnd;
+            let pdfDoc;
+
+            try {
+                pdfDoc = await PDFLib.PDFDocument.load(arrayBuffer);
+            } catch (e) {
+                obviousCorruption = true;
+                const fixedBuffer = attemptToFixPdfHeader(arrayBuffer);
+                if (!fixedBuffer) throw new Error("PDF header missing or unrecoverable.");
+                pdfDoc = await PDFLib.PDFDocument.load(fixedBuffer);
+            }
+
+            if (pdfDoc.getPageCount() === 0) throw new Error("The PDF contains no valid pages.");
+
+            const savedBytes = await pdfDoc.save();
+            result.finalBlob = new Blob([savedBytes], { type: 'application/pdf' });
+
+            if (obviousCorruption) {
+                result.status = 'fixed';
+                result.message = 'Structural errors found. PDF repaired and rebuilt.';
+            } else {
+                result.status = 'standardized';
+                result.message = 'File read and standardized for maximum compatibility.';
+            }
+        }
+
+        async function handleImageValidation(file, result) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                const url = URL.createObjectURL(file);
+
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0);
+
+                    // Re-encoding image strips out corrupted headers, broken EXIF data, or embedded payloads
+                    canvas.toBlob((blob) => {
+                        URL.revokeObjectURL(url);
+                        if (blob) {
+                            result.finalBlob = blob;
+                            result.status = 'standardized';
+                            result.message = 'Image decoded and safely re-encoded to strip bad metadata/payloads.';
+                            resolve();
+                        } else {
+                            reject(new Error("Image serialization failed."));
+                        }
+                    }, file.type);
+                };
+
+                img.onerror = () => {
+                    URL.revokeObjectURL(url);
+                    reject(new Error("Image is corrupted or unsupported format."));
+                };
+
+                img.src = url;
+            });
+        }
+
+        async function handleArchiveValidation(file, result) {
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                // JSZip loads the archive. If it's corrupted, this throws an error.
+                const zip = await JSZip.loadAsync(arrayBuffer);
+
+                // We re-generate the zip to ensure a perfectly standard zip header
+                const newZipBlob = await zip.generateAsync({ type: 'blob' });
+
+                result.finalBlob = newZipBlob;
+                result.status = 'standardized';
+                result.message = 'Archive structure validated and headers standardized.';
+            } catch (e) {
+                throw new Error("Invalid or severely corrupted archive/document structure.");
+            }
+        }
+
+        // --- Helpers ---
+
+        function attemptToFixPdfHeader(buffer) {
+            const uint8 = new Uint8Array(buffer);
+            const signature = [0x25, 0x50, 0x44, 0x46, 0x2D]; // %PDF-
+            const limit = Math.min(uint8.length, 2048);
+
+            for (let i = 0; i < limit - signature.length; i++) {
+                let match = true;
+                for (let j = 0; j < signature.length; j++) {
+                    if (uint8[i + j] !== signature[j]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) return buffer.slice(i);
+            }
+            return null;
+        }
+
+        // --- UI Rendering ---
+
+        function buildResultsTable() {
+            resultsTableBody.innerHTML = '';
+
+            processedFiles.forEach((fileObj) => {
+                const tr = document.createElement('tr');
+                tr.className = 'hover:bg-slate-50 dark:hover:bg-slate-700/20 transition-colors';
+
+                // 1. Icon Col
+                let iconClass = 'ph-file';
+                const nameLow = fileObj.name.toLowerCase();
+                if (nameLow.endsWith('.pdf')) iconClass = 'ph-file-pdf';
+                else if (nameLow.match(/\.(jpg|jpeg|png|gif|webp)$/)) iconClass = 'ph-image';
+                else if (nameLow.match(/\.(zip|rar|7z)$/)) iconClass = 'ph-file-archive';
+                else if (nameLow.match(/\.(docx|doc)$/)) iconClass = 'ph-file-doc';
+                else if (nameLow.match(/\.(xlsx|xls|csv)$/)) iconClass = 'ph-file-xls';
+
+                const tdIcon = `<td class="px-6 py-4 text-center whitespace-nowrap"><i class="ph ${iconClass} text-2xl text-slate-400"></i></td>`;
+
+                // 2. Name Col
+                const tdName = `<td class="px-6 py-4 font-medium whitespace-nowrap">${fileObj.name}</td>`;
+
+                // 3. Status Col
+                let statusColor = '';
+                let statusText = '';
+
+                if (fileObj.status === 'fine') {
+                    statusColor = 'text-slate-500';
+                    statusText = 'Fine';
+                } else if (fileObj.status === 'standardized') {
+                    statusColor = 'text-brand-blue';
+                    statusText = 'Standardized';
+                } else if (fileObj.status === 'fixed') {
+                    statusColor = 'text-brand-green';
+                    statusText = 'Repaired';
+                } else {
+                    statusColor = 'text-brand-red';
+                    statusText = 'Invalid';
+                }
+
+                const tdStatus = `<td class="px-6 py-4 font-bold ${statusColor} whitespace-nowrap">${statusText}</td>`;
+
+                // 4. Details Col
+                const tdDetails = `<td class="px-6 py-4 text-sm text-slate-500 dark:text-slate-400 whitespace-normal min-w-[200px]">${fileObj.message}</td>`;
+
+                // 5. Download Col
+                let downloadBtn = '';
+                if (fileObj.status !== 'invalid') {
+                    const url = URL.createObjectURL(fileObj.finalBlob);
+                    downloadBtn = `
+                            <a href="${url}" download="ckf_ready_${fileObj.name}" class="inline-flex items-center justify-center w-10 h-10 rounded-full bg-slate-100 hover:bg-brand-blue hover:text-white dark:bg-slate-700 dark:hover:bg-brand-blue transition-colors group" title="Download fixed file">
+                                <i class="ph ph-download-simple text-lg"></i>
+                            </a>
+                        `;
+                } else {
+                    downloadBtn = `<span class="text-slate-400 text-sm italic">Cannot download</span>`;
+                }
+                const tdAction = `<td class="px-6 py-4 text-right whitespace-nowrap">${downloadBtn}</td>`;
+
+                tr.innerHTML = tdIcon + tdName + tdStatus + tdDetails + tdAction;
+                resultsTableBody.appendChild(tr);
+            });
+        }
+
+        // --- Actions ---
+
+        function resetApp() {
+            processedFiles = [];
+            fileInput.value = '';
+
+            viewResults.classList.add('hidden');
+            viewResults.classList.remove('flex');
+
+            updateProgress(0, 'Starting...');
+
+            viewUpload.classList.remove('hidden');
+        }
+
+        async function downloadAllAsZip() {
+            const validFiles = processedFiles.filter(f => f.status !== 'invalid');
+
+            if (validFiles.length === 0) {
+                alert("No valid files to download.");
+                return;
+            }
+
+            const originalHtml = btnDownloadAll.innerHTML;
+            btnDownloadAll.innerHTML = '<i class="ph ph-spinner animate-spin text-xl"></i> Creating zip...';
+            btnDownloadAll.disabled = true;
+
+            try {
+                const zip = new JSZip();
+
+                validFiles.forEach(fileObj => {
+                    zip.file("ckf_ready_" + fileObj.name, fileObj.finalBlob);
+                });
+
+                const zipBlob = await zip.generateAsync({ type: 'blob' });
+
+                const url = URL.createObjectURL(zipBlob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'checked_files.zip';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+
+            } catch (error) {
+                console.error("Error creating zip:", error);
+                alert("An error occurred while creating the zip file.");
+            } finally {
+                btnDownloadAll.innerHTML = originalHtml;
+                btnDownloadAll.disabled = false;
+            }
+        }
+
+    </script>
+</body>
+</html>
