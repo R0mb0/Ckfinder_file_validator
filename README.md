@@ -5,7 +5,8 @@
 A privacy-first, client-side web tool built with vanilla JavaScript to validate, repair, and standardize files before uploading them to strict server parsers (like CKFinder). It actively rebuilds PDFs, sanitizes images, and standardizes archives completely offline. No server uploads, zero privacy risks.
 </p>
 
-
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/db78cb80b34745ea9acda26dce4657bb)](https://app.codacy.com/gh/R0mb0/Ckfinder_file_validator/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
+[![pages-build-deployment](https://github.com/R0mb0/Ckfinder_file_validator/actions/workflows/pages/pages-build-deployment/badge.svg)](https://github.com/R0mb0/Ckfinder_file_validator/actions/workflows/pages/pages-build-deployment)
 [![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/R0mb0/Ckfinder_file_validator)
 [![Open Source Love svg3](https://badges.frapsoft.com/os/v3/open-source.svg?v=103)](https://github.com/R0mb0/Ckfinder_file_validator)
 [![MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/license/mit)
