@@ -67,6 +67,14 @@ A privacy-first, client-side web tool built with vanilla JavaScript to validate,
 <li>Start validating and sanitizing!</li>
 </ol>
 
+<h2>🙏 Credits & Inspiration</h2>
+<ul>
+<li><strong><a href="https://pdf-lib.js.org/">pdf-lib</a></strong>: The heavy lifter for parsing and mathematically rebuilding PDF structures from scratch in the browser.</li>
+<li><strong><a href="https://stuk.github.io/jszip/">JSZip</a></strong>: For seamlessly reading and standardizing ZIP and Office document headers.</li>
+<li><strong><a href="https://tailwindcss.com/">Tailwind CSS</a></strong>: For making the UI modern, responsive, and a joy to build.</li>
+<li><strong><a href="https://phosphoricons.com/">Phosphor Icons</a></strong>: For the beautiful, clean icons used throughout the interface.</li>
+</ul>
+
 <a href="https://github.com/R0mb0/Crafted_with_AI">
 <picture>
 <source media="(prefers-color-scheme: dark)" srcset="https://github.com/R0mb0/Crafted_with_AI/blob/main/Badge/SVG/CraftedWithAIDark.svg">
