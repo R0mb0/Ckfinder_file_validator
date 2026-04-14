@@ -282,55 +282,50 @@
             const arrayBuffer = await file.arrayBuffer();
             const uint8 = new Uint8Array(arrayBuffer);
 
-            // correct Header check 
+            // Header check: File MUST start with %PDF- at byte 0
             const startsWithPdf = uint8.length >= 5 && uint8[0] === 0x25 && uint8[1] === 0x50 && uint8[2] === 0x44 && uint8[3] === 0x46 && uint8[4] === 0x2D;
-            
-            // Check EOF
-            let endStr = '';
-            const startIdx = Math.max(0, uint8.length - 2048);
-            for (let i = startIdx; i < uint8.length; i++) endStr += String.fromCharCode(uint8[i]);
-            
-            const hasEof = endStr.includes('%%EOF');
-            const hasStartXref = endStr.includes('startxref');
 
             let wasHeaderRepaired = false;
-            let pdfDoc;
+            let originalPdfDoc;
 
-            // try to laod normally
             try {
-                // If no correct header, goes to catch
-                if (!startsWithPdf) {
-                    throw new Error("Missing %PDF- header");
-                }
-                
-                pdfDoc = await PDFLib.PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-                
+                if (!startsWithPdf) throw new Error("Missing %PDF- header");
+                originalPdfDoc = await PDFLib.PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
             } catch (e) {
-                // if fail, emergency ectraction
+                // Emergency header fix for severe corruption
                 const fixedBuffer = attemptToFixPdfHeader(arrayBuffer);
                 if (!fixedBuffer) throw new Error("PDF header missing or unrecoverable.");
-                
-                // load cutted buffer
-                pdfDoc = await PDFLib.PDFDocument.load(fixedBuffer, { ignoreEncryption: true });
+                originalPdfDoc = await PDFLib.PDFDocument.load(fixedBuffer, { ignoreEncryption: true });
                 wasHeaderRepaired = true;
             }
 
-            if (pdfDoc.getPageCount() === 0) throw new Error("The PDF contains no valid pages.");
+            if (originalPdfDoc.getPageCount() === 0) throw new Error("The PDF contains no valid pages.");
 
-            
-            const savedBytes = await pdfDoc.save({ useObjectStreams: false });
+            // *** THE ULTIMATE FIX: The "Print to PDF" approach ***
+            // Instead of saving the original bloated file, we create a pristine, blank PDF.
+            const cleanPdfDoc = await PDFLib.PDFDocument.create();
+
+            // Copy ONLY the visible pages from the original to the new document.
+            // This automatically strips out all hidden garbage, orphaned objects,
+            // complex metadata, and broken digital signature wrappers that parsers hate.
+            const copiedPages = await cleanPdfDoc.copyPages(originalPdfDoc, originalPdfDoc.getPageIndices());
+            copiedPages.forEach((page) => cleanPdfDoc.addPage(page));
+
+            // Set safe, clean metadata to overwrite any existing corrupted ones
+            cleanPdfDoc.setTitle('Sanitized Document');
+            cleanPdfDoc.setProducer('File Validator Tool');
+
+            // Save as a classic, non-linearized PDF for 100% compatibility
+            const savedBytes = await cleanPdfDoc.save({ useObjectStreams: false });
             result.finalBlob = new Blob([savedBytes], { type: 'application/pdf' });
 
-            // Messagges 
+            // Status Messaging
             if (wasHeaderRepaired) {
                 result.status = 'fixed';
-                result.message = 'Repaired corrupted %PDF- header and rebuilt document structure.';
-            } else if (!hasEof || !hasStartXref) {
-                result.status = 'fixed';
-                result.message = 'Repaired missing EOF/Xref markers and rebuilt document structure.';
+                result.message = 'Repaired corrupted header and performed deep structural clean.';
             } else {
                 result.status = 'standardized';
-                result.message = 'File standardized (converted to classic PDF structure) for maximum compatibility.';
+                result.message = 'Performed deep structural clean (stripped hidden objects and metadata).';
             }
         }
 
