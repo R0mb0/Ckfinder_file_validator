@@ -238,22 +238,28 @@
         }
 
         async function processSingleFile(file) {
-            // --- NEW: Filename Sanitization ---
-            // CKFinder notoriously blocks files with multiple dots in the name (e.g., "file.12.3.pdf")
-            // treating them as double-extension security risks.
-            const originalName = file.name;
+            // --- ULTIMATE FILENAME SANITIZATION ---
+            // 403 Forbidden errors are extremely often caused by WAFs (Web Application Firewalls)
+            // blocking specific characters (spaces, parenthesis, dots) in the filename.
+            let originalName = file.name;
             const lastDotIndex = originalName.lastIndexOf('.');
-            let safeFileName = originalName;
+            let nameBase = originalName;
+            let extension = '';
             
             if (lastDotIndex !== -1) {
-                const nameBase = originalName.substring(0, lastDotIndex);
-                const extension = originalName.substring(lastDotIndex);
-                // Replace all dots in the base name with underscores
-                safeFileName = nameBase.replace(/\./g, '_') + extension;
+                nameBase = originalName.substring(0, lastDotIndex);
+                extension = originalName.substring(lastDotIndex).toLowerCase();
             }
 
+            // Replace EVERYTHING that is not a letter or a number with an underscore
+            nameBase = nameBase.replace(/[^a-zA-Z0-9]/g, '_');
+            // Remove multiple consecutive underscores for a cleaner look
+            nameBase = nameBase.replace(/_+/g, '_');
+
+            const safeFileName = nameBase + extension;
+
             const result = {
-                name: safeFileName, // Use the sanitized name
+                name: safeFileName, // Use the hyper-sanitized name
                 originalFile: file,
                 finalBlob: file, 
                 status: 'fine',
@@ -266,10 +272,9 @@
                 return result;
             }
 
-            const nameLow = safeFileName.toLowerCase();
-            const isPdf = nameLow.endsWith('.pdf');
-            const isImage = nameLow.match(/\.(jpg|jpeg|png|webp)$/);
-            const isArchive = nameLow.match(/\.(zip|docx|xlsx|pptx)$/);
+            const isPdf = extension === '.pdf';
+            const isImage = extension.match(/\.(jpg|jpeg|png|webp)$/);
+            const isArchive = extension.match(/\.(zip|docx|xlsx|pptx)$/);
 
             try {
                 if (isPdf) {
@@ -306,7 +311,6 @@
                 if (!startsWithPdf) throw new Error("Missing %PDF- header");
                 originalPdfDoc = await PDFLib.PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
             } catch (e) {
-                // Emergency header fix
                 const fixedBuffer = attemptToFixPdfHeader(arrayBuffer);
                 if (!fixedBuffer) throw new Error("PDF header missing or unrecoverable.");
                 originalPdfDoc = await PDFLib.PDFDocument.load(fixedBuffer, { ignoreEncryption: true });
@@ -315,72 +319,12 @@
 
             if (originalPdfDoc.getPageCount() === 0) throw new Error("The PDF contains no valid pages.");
 
+            // Standard clean copy. PDF-lib automatically drops unused/orphaned objects 
+            // without creating dangerous "dangling references" that trigger WAF 403 errors.
             const cleanPdfDoc = await PDFLib.PDFDocument.create();
             const copiedPages = await cleanPdfDoc.copyPages(originalPdfDoc, originalPdfDoc.getPageIndices());
             
             copiedPages.forEach((page) => {
-                // 1. Remove basic Annotations
-                page.node.delete(PDFLib.PDFName.of('Annots'));
-                page.node.delete(PDFLib.PDFName.of('PieceInfo'));
-                
-                // 2. SURGICAL SCRUBBING: Destroy OCR layers and invisible fonts
-                // This specifically targets 'GlyphLessFont' and hidden /Form XObjects
-                // which trigger Anti-Malware and CKFinder security blocks.
-                try {
-                    const resourcesRef = page.node.get(PDFLib.PDFName.of('Resources'));
-                    if (resourcesRef) {
-                        const resources = cleanPdfDoc.context.lookup(resourcesRef);
-                        
-                        if (resources instanceof PDFLib.PDFDict) {
-                            // A. Scrub Form XObjects (used by OCR to hide invisible text)
-                            const xobjectsRef = resources.get(PDFLib.PDFName.of('XObject'));
-                            if (xobjectsRef) {
-                                const xobjects = cleanPdfDoc.context.lookup(xobjectsRef);
-                                if (xobjects instanceof PDFLib.PDFDict) {
-                                    const keys = xobjects.keys();
-                                    for (let j = 0; j < keys.length; j++) {
-                                        const key = keys[j];
-                                        const xobjRef = xobjects.get(key);
-                                        const xobj = cleanPdfDoc.context.lookup(xobjRef);
-                                        
-                                        if (xobj instanceof PDFLib.PDFStream) {
-                                            const subtype = xobj.dict.get(PDFLib.PDFName.of('Subtype'));
-                                            // KEEP Images, DELETE Forms (invisible text layers)
-                                            if (subtype === PDFLib.PDFName.of('Form')) {
-                                                xobjects.delete(key);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            // B. Scrub suspect Fonts (GlyphLessFont)
-                            const fontsRef = resources.get(PDFLib.PDFName.of('Font'));
-                            if (fontsRef) {
-                                const fonts = cleanPdfDoc.context.lookup(fontsRef);
-                                if (fonts instanceof PDFLib.PDFDict) {
-                                    const fKeys = fonts.keys();
-                                    for (let j = 0; j < fKeys.length; j++) {
-                                        const key = fKeys[j];
-                                        const fontRef = fonts.get(key);
-                                        const fontDict = cleanPdfDoc.context.lookup(fontRef);
-                                        
-                                        if (fontDict instanceof PDFLib.PDFDict) {
-                                            const baseFont = fontDict.get(PDFLib.PDFName.of('BaseFont'));
-                                            // If the font is invisible, delete it to pass AV scans
-                                            if (baseFont && baseFont.toString().includes('GlyphLessFont')) {
-                                                fonts.delete(key);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } catch (err) {
-                    console.warn("Non-standard resource structure bypassed.", err);
-                }
-
                 cleanPdfDoc.addPage(page);
             });
 
@@ -388,16 +332,16 @@
             cleanPdfDoc.setTitle('Sanitized Document');
             cleanPdfDoc.setProducer('File Validator Tool');
 
-            // Save document stripping advanced streams
+            // Save as a classic, non-linearized PDF
             const savedBytes = await cleanPdfDoc.save({ useObjectStreams: false });
             result.finalBlob = new Blob([savedBytes], { type: 'application/pdf' });
 
             if (wasHeaderRepaired) {
                 result.status = 'fixed';
-                result.message = 'Repaired header and scrubbed malicious-looking OCR layers.';
+                result.message = 'Repaired header and aggressively sanitized filename.';
             } else {
                 result.status = 'standardized';
-                result.message = 'Scrubbed invisible OCR text and Form layers to bypass security filters.';
+                result.message = 'Standardized document structure and aggressively sanitized filename.';
             }
         }
 
@@ -524,7 +468,7 @@
                 if (fileObj.status !== 'invalid') {
                     const url = URL.createObjectURL(fileObj.finalBlob);
                     downloadBtn = `
-                            <a href="${url}" download="ckf_ready_${fileObj.name}" class="inline-flex items-center justify-center w-10 h-10 rounded-full bg-slate-100 hover:bg-brand-blue hover:text-white dark:bg-slate-700 dark:hover:bg-brand-blue transition-colors group" title="Download fixed file">
+                            <a href="${url}" download="${fileObj.name}" class="inline-flex items-center justify-center w-10 h-10 rounded-full bg-slate-100 hover:bg-brand-blue hover:text-white dark:bg-slate-700 dark:hover:bg-brand-blue transition-colors group" title="Download fixed file">
                                 <i class="ph ph-download-simple text-lg"></i>
                             </a>
                         `;
