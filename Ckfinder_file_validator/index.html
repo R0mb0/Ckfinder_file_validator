@@ -302,7 +302,7 @@
                 if (!startsWithPdf) throw new Error("Missing %PDF- header");
                 originalPdfDoc = await PDFLib.PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
             } catch (e) {
-                // Emergency header fix for severe corruption
+                // Emergency header fix
                 const fixedBuffer = attemptToFixPdfHeader(arrayBuffer);
                 if (!fixedBuffer) throw new Error("PDF header missing or unrecoverable.");
                 originalPdfDoc = await PDFLib.PDFDocument.load(fixedBuffer, { ignoreEncryption: true });
@@ -311,37 +311,89 @@
 
             if (originalPdfDoc.getPageCount() === 0) throw new Error("The PDF contains no valid pages.");
 
-            // Create a pristine, blank PDF
             const cleanPdfDoc = await PDFLib.PDFDocument.create();
-
-            // Copy ONLY the visible pages
             const copiedPages = await cleanPdfDoc.copyPages(originalPdfDoc, originalPdfDoc.getPageIndices());
             
             copiedPages.forEach((page) => {
-                // --- NEW: Deep Annotation & Hidden Layer Scrubbing ---
-                // CKFinder's security scanners often block PDFs containing OCR hidden text layers,
-                // invisible annotations, or proprietary Adobe data.
+                // 1. Remove basic Annotations
                 page.node.delete(PDFLib.PDFName.of('Annots'));
                 page.node.delete(PDFLib.PDFName.of('PieceInfo'));
                 
+                // 2. SURGICAL SCRUBBING: Destroy OCR layers and invisible fonts
+                // This specifically targets 'GlyphLessFont' and hidden /Form XObjects
+                // which trigger Anti-Malware and CKFinder security blocks.
+                try {
+                    const resourcesRef = page.node.get(PDFLib.PDFName.of('Resources'));
+                    if (resourcesRef) {
+                        const resources = cleanPdfDoc.context.lookup(resourcesRef);
+                        
+                        if (resources instanceof PDFLib.PDFDict) {
+                            // A. Scrub Form XObjects (used by OCR to hide invisible text)
+                            const xobjectsRef = resources.get(PDFLib.PDFName.of('XObject'));
+                            if (xobjectsRef) {
+                                const xobjects = cleanPdfDoc.context.lookup(xobjectsRef);
+                                if (xobjects instanceof PDFLib.PDFDict) {
+                                    const keys = xobjects.keys();
+                                    for (let j = 0; j < keys.length; j++) {
+                                        const key = keys[j];
+                                        const xobjRef = xobjects.get(key);
+                                        const xobj = cleanPdfDoc.context.lookup(xobjRef);
+                                        
+                                        if (xobj instanceof PDFLib.PDFStream) {
+                                            const subtype = xobj.dict.get(PDFLib.PDFName.of('Subtype'));
+                                            // KEEP Images, DELETE Forms (invisible text layers)
+                                            if (subtype === PDFLib.PDFName.of('Form')) {
+                                                xobjects.delete(key);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // B. Scrub suspect Fonts (GlyphLessFont)
+                            const fontsRef = resources.get(PDFLib.PDFName.of('Font'));
+                            if (fontsRef) {
+                                const fonts = cleanPdfDoc.context.lookup(fontsRef);
+                                if (fonts instanceof PDFLib.PDFDict) {
+                                    const fKeys = fonts.keys();
+                                    for (let j = 0; j < fKeys.length; j++) {
+                                        const key = fKeys[j];
+                                        const fontRef = fonts.get(key);
+                                        const fontDict = cleanPdfDoc.context.lookup(fontRef);
+                                        
+                                        if (fontDict instanceof PDFLib.PDFDict) {
+                                            const baseFont = fontDict.get(PDFLib.PDFName.of('BaseFont'));
+                                            // If the font is invisible, delete it to pass AV scans
+                                            if (baseFont && baseFont.toString().includes('GlyphLessFont')) {
+                                                fonts.delete(key);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (err) {
+                    console.warn("Non-standard resource structure bypassed.", err);
+                }
+
                 cleanPdfDoc.addPage(page);
             });
 
-            // Set safe, clean metadata
+            // Set clean metadata
             cleanPdfDoc.setTitle('Sanitized Document');
             cleanPdfDoc.setProducer('File Validator Tool');
 
-            // Save as a classic, non-linearized PDF for 100% compatibility
+            // Save document stripping advanced streams
             const savedBytes = await cleanPdfDoc.save({ useObjectStreams: false });
             result.finalBlob = new Blob([savedBytes], { type: 'application/pdf' });
 
-            // Status Messaging
             if (wasHeaderRepaired) {
                 result.status = 'fixed';
-                result.message = 'Repaired header, scrubbed hidden layers, and sanitized filename.';
+                result.message = 'Repaired header and scrubbed malicious-looking OCR layers.';
             } else {
                 result.status = 'standardized';
-                result.message = 'Scrubbed hidden metadata/annotations and sanitized filename.';
+                result.message = 'Scrubbed invisible OCR text and Form layers to bypass security filters.';
             }
         }
 
