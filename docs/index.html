@@ -301,6 +301,7 @@
             const arrayBuffer = await file.arrayBuffer();
             const uint8 = new Uint8Array(arrayBuffer);
 
+<<<<<<< HEAD
             // Header check: File MUST start with %PDF- at byte 0
             const startsWithPdf = uint8.length >= 5 && uint8[0] === 0x25 && uint8[1] === 0x50 && uint8[2] === 0x44 && uint8[3] === 0x46 && uint8[4] === 0x2D;
 
@@ -316,10 +317,32 @@
                 if (!fixedBuffer) throw new Error("PDF header missing or unrecoverable.");
                 originalPdfDoc = await PDFLib.PDFDocument.load(fixedBuffer, { ignoreEncryption: true });
                 wasHeaderRepaired = true;
+=======
+            const startsWithPdf = uint8.length >= 5 && uint8[0] === 0x25 && uint8[1] === 0x50 && uint8[2] === 0x44 && uint8[3] === 0x46 && uint8[4] === 0x2D;
+            let endStr = '';
+            const startIdx = Math.max(0, uint8.length - 1024);
+            for (let i = startIdx; i < uint8.length; i++) endStr += String.fromCharCode(uint8[i]);
+
+            const hasEof = endStr.includes('%%EOF');
+            const hasStartXref = endStr.includes('startxref');
+            const eofIsNearEnd = endStr.lastIndexOf('%%EOF') >= endStr.length - 40;
+
+            let obviousCorruption = !startsWithPdf || !hasEof || !hasStartXref || !eofIsNearEnd;
+            let pdfDoc;
+
+            try {
+                pdfDoc = await PDFLib.PDFDocument.load(arrayBuffer);
+            } catch (e) {
+                obviousCorruption = true;
+                const fixedBuffer = attemptToFixPdfHeader(arrayBuffer);
+                if (!fixedBuffer) throw new Error("PDF header missing or unrecoverable.");
+                pdfDoc = await PDFLib.PDFDocument.load(fixedBuffer);
+>>>>>>> parent of 218c03a (Fix checker)
             }
 
             if (originalPdfDoc.getPageCount() === 0) throw new Error("The PDF contains no valid pages.");
 
+<<<<<<< HEAD
             // We save the parsed document to an intermediate buffer to ensure
             // the structure is readable and any header fixes are applied.
             const intermediateBytes = await originalPdfDoc.save();
@@ -366,6 +389,17 @@
             } else {
                 result.status = 'standardized';
                 result.message = 'Performed "Vector Print": kept text accessible but purged structural bloat.';
+=======
+            const savedBytes = await pdfDoc.save();
+            result.finalBlob = new Blob([savedBytes], { type: 'application/pdf' });
+
+            if (obviousCorruption) {
+                result.status = 'fixed';
+                result.message = 'Structural errors found. PDF repaired and rebuilt.';
+            } else {
+                result.status = 'standardized';
+                result.message = 'File read and standardized for maximum compatibility.';
+>>>>>>> parent of 218c03a (Fix checker)
             }
         }
 
