@@ -34,6 +34,11 @@
     <!-- JSZip for zipping files -->
     <script src="jszip.min.js"></script>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
+
     <style>
         /* Custom scrollbar for the table container */
         .custom-scrollbar::-webkit-scrollbar {
@@ -280,73 +285,101 @@
 
         async function handlePdfValidation(file, result) {
             const arrayBuffer = await file.arrayBuffer();
-            const uint8 = new Uint8Array(arrayBuffer);
 
-            // Header check: File MUST start with %PDF- at byte 0
-            const startsWithPdf = uint8.length >= 5 && uint8[0] === 0x25 && uint8[1] === 0x50 && uint8[2] === 0x44 && uint8[3] === 0x46 && uint8[4] === 0x2D;
-
-            let originalPdfDoc;
-            let wasHeaderRepaired = false;
-
-            try {
-                if (!startsWithPdf) throw new Error("Missing %PDF- header");
-                originalPdfDoc = await PDFLib.PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-            } catch (e) {
-                // Emergency header fix for severely corrupted files
-                const fixedBuffer = attemptToFixPdfHeader(arrayBuffer);
-                if (!fixedBuffer) throw new Error("PDF header missing or unrecoverable.");
-                originalPdfDoc = await PDFLib.PDFDocument.load(fixedBuffer, { ignoreEncryption: true });
-                wasHeaderRepaired = true;
+            // Check if PDF.js is loaded
+            if (typeof pdfjsLib === 'undefined') {
+                throw new Error("PDF.js library is missing. Please add it to the <head>.");
             }
 
-            if (originalPdfDoc.getPageCount() === 0) throw new Error("The PDF contains no valid pages.");
-
-            // --- THE TRUE "SAVE AS" STRATEGY (Garbage Collection) ---
-            // To completely bypass the WAF (403 Forbidden), we cannot just hide the annotations.
-            // We must prevent the malicious/cryptographic payloads (QR-codes, signatures) 
-            // from ever being copied into the new file.
-            // We do this by severing the references in the ORIGINAL document BEFORE copying.
-
-            try {
-                // 1. Sever Catalog-level bloat (Signatures, OCR Trees, Metadata)
-                originalPdfDoc.catalog.delete(PDFLib.PDFName.of('AcroForm'));
-                originalPdfDoc.catalog.delete(PDFLib.PDFName.of('StructTreeRoot'));
-                originalPdfDoc.catalog.delete(PDFLib.PDFName.of('Metadata'));
-                originalPdfDoc.catalog.delete(PDFLib.PDFName.of('Outlines'));
-
-                // 2. Sever Page-level bloat (This destroys the QR-Code connection)
-                const pages = originalPdfDoc.getPages();
-                for (let i = 0; i < pages.length; i++) {
-                    pages[i].node.delete(PDFLib.PDFName.of('Annots'));
-                    pages[i].node.delete(PDFLib.PDFName.of('PieceInfo'));
-                }
-            } catch (err) {
-                console.warn("Reference severing skipped:", err);
-            }
-
-            // 3. Create a brand new, virgin PDF
+            // Create a brand new, virgin PDF document from absolute scratch
             const cleanPdfDoc = await PDFLib.PDFDocument.create();
+            // Embed a standard, 100% safe font
+            const helveticaFont = await cleanPdfDoc.embedFont(PDFLib.StandardFonts.Helvetica);
 
-            // 4. Copy pages. Because we severed the links to 'Annots' and 'AcroForm' above, 
-            // pdf-lib's copyPages() will NOT copy the toxic cryptographic payloads into the new context!
-            const copiedPages = await cleanPdfDoc.copyPages(originalPdfDoc, originalPdfDoc.getPageIndices());
-            copiedPages.forEach((page) => cleanPdfDoc.addPage(page));
+            try {
+                // 1. Load the original PDF with PDF.js (Highly tolerant to corruption)
+                const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+                const pdf = await loadingTask.promise;
+                const totalPages = pdf.numPages;
 
-            // 5. Spoof metadata to mimic a clean, trusted Microsoft Word export
-            cleanPdfDoc.setTitle('Sanitized Document');
-            cleanPdfDoc.setCreator('Microsoft® Word 2016');
-            cleanPdfDoc.setProducer('Microsoft® Word 2016');
+                if (totalPages === 0) throw new Error("The PDF contains no valid pages.");
 
-            // 6. Save as classic PDF without object streams (strips Linearization completely)
-            const savedBytes = await cleanPdfDoc.save({ useObjectStreams: false });
-            result.finalBlob = new Blob([savedBytes], { type: 'application/pdf' });
+                // 2. Iterate through each page to perform the "Radical Hybrid Rebuild"
+                for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+                    const page = await pdf.getPage(pageNum);
 
-            if (wasHeaderRepaired) {
-                result.status = 'fixed';
-                result.message = 'Repaired header and rebuilt file from scratch (True Save-As).';
-            } else {
+                    // --- LAYER 1: RASTERIZATION (The Visual Layer) ---
+                    // We photograph the page (scale 2.0 for crisp quality). 
+                    // This permanently destroys toxic OCR dictionaries, signatures, and QR payloads.
+                    const viewportRender = page.getViewport({ scale: 2.0 });
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    canvas.width = viewportRender.width;
+                    canvas.height = viewportRender.height;
+
+                    await page.render({ canvasContext: ctx, viewport: viewportRender }).promise;
+
+                    // Compress as JPEG to drop file size significantly
+                    const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+                    const pdfImage = await cleanPdfDoc.embedJpg(jpegDataUrl);
+
+                    // --- LAYER 2: TEXT EXTRACTION (The Accessibility Layer) ---
+                    // We extract the pure text coordinates from the original file.
+                    const textContent = await page.getTextContent();
+                    const viewportOriginal = page.getViewport({ scale: 1.0 });
+
+                    // Create the new page matching original physical dimensions
+                    const newPage = cleanPdfDoc.addPage([viewportOriginal.width, viewportOriginal.height]);
+
+                    // Stamp the visual JPEG onto the background
+                    newPage.drawImage(pdfImage, {
+                        x: 0,
+                        y: 0,
+                        width: viewportOriginal.width,
+                        height: viewportOriginal.height,
+                    });
+
+                    // Stamp the invisible text on top for selectability/searchability
+                    for (const item of textContent.items) {
+                        const text = item.str;
+                        // Skip empty strings to save space
+                        if (text.trim() === '') continue;
+
+                        // Calculate PDF coordinates (PDF.js provides them from bottom-left natively)
+                        const fontSize = Math.abs(item.transform[0]);
+                        const x = item.transform[4];
+                        const y = item.transform[5];
+
+                        try {
+                            newPage.drawText(text, {
+                                x: x,
+                                y: y,
+                                size: fontSize || 10,
+                                font: helveticaFont,
+                                color: PDFLib.rgb(0, 0, 0),
+                                opacity: 0, // CRITICAL: Invisible text!
+                            });
+                        } catch (textErr) {
+                            // Silently ignore special characters that Helvetica doesn't support
+                        }
+                    }
+                }
+
+                // Spoof metadata to mimic a clean Word export (Trusted by WAFs)
+                cleanPdfDoc.setTitle('Sanitized Document');
+                cleanPdfDoc.setCreator('Microsoft® Word 2016');
+                cleanPdfDoc.setProducer('Microsoft® Word 2016');
+
+                // Save as a classic, flat PDF without object streams
+                const savedBytes = await cleanPdfDoc.save({ useObjectStreams: false });
+                result.finalBlob = new Blob([savedBytes], { type: 'application/pdf' });
+
                 result.status = 'standardized';
-                result.message = 'Rebuilt PDF from scratch, abandoning all signatures and hidden WAF triggers.';
+                result.message = 'Radical Rebuild: rasterized visuals and injected invisible accessible text.';
+
+            } catch (error) {
+                console.error("Hybrid rebuild failed:", error);
+                throw new Error("Could not radically rebuild the PDF.");
             }
         }
 
