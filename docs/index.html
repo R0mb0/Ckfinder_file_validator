@@ -238,30 +238,10 @@
         }
 
         async function processSingleFile(file) {
-            // --- ULTIMATE FILENAME SANITIZATION ---
-            // 403 Forbidden errors are extremely often caused by WAFs (Web Application Firewalls)
-            // blocking specific characters (spaces, parenthesis, dots) in the filename.
-            let originalName = file.name;
-            const lastDotIndex = originalName.lastIndexOf('.');
-            let nameBase = originalName;
-            let extension = '';
-            
-            if (lastDotIndex !== -1) {
-                nameBase = originalName.substring(0, lastDotIndex);
-                extension = originalName.substring(lastDotIndex).toLowerCase();
-            }
-
-            // Replace EVERYTHING that is not a letter or a number with an underscore
-            nameBase = nameBase.replace(/[^a-zA-Z0-9]/g, '_');
-            // Remove multiple consecutive underscores for a cleaner look
-            nameBase = nameBase.replace(/_+/g, '_');
-
-            const safeFileName = nameBase + extension;
-
             const result = {
-                name: safeFileName, // Use the hyper-sanitized name
+                name: file.name,
                 originalFile: file,
-                finalBlob: file, 
+                finalBlob: file,
                 status: 'fine',
                 message: ''
             };
@@ -272,9 +252,10 @@
                 return result;
             }
 
-            const isPdf = extension === '.pdf';
-            const isImage = extension.match(/\.(jpg|jpeg|png|webp)$/);
-            const isArchive = extension.match(/\.(zip|docx|xlsx|pptx)$/);
+            const nameLow = file.name.toLowerCase();
+            const isPdf = nameLow.endsWith('.pdf');
+            const isImage = nameLow.match(/\.(jpg|jpeg|png|webp)$/);
+            const isArchive = nameLow.match(/\.(zip|docx|xlsx|pptx)$/);
 
             try {
                 if (isPdf) {
@@ -301,23 +282,6 @@
             const arrayBuffer = await file.arrayBuffer();
             const uint8 = new Uint8Array(arrayBuffer);
 
-<<<<<<< HEAD
-            // Header check: File MUST start with %PDF- at byte 0
-            const startsWithPdf = uint8.length >= 5 && uint8[0] === 0x25 && uint8[1] === 0x50 && uint8[2] === 0x44 && uint8[3] === 0x46 && uint8[4] === 0x2D;
-
-            let originalPdfDoc;
-            let wasHeaderRepaired = false;
-
-            try {
-                if (!startsWithPdf) throw new Error("Missing %PDF- header");
-                originalPdfDoc = await PDFLib.PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-            } catch (e) {
-                // Emergency header fix for corrupted files
-                const fixedBuffer = attemptToFixPdfHeader(arrayBuffer);
-                if (!fixedBuffer) throw new Error("PDF header missing or unrecoverable.");
-                originalPdfDoc = await PDFLib.PDFDocument.load(fixedBuffer, { ignoreEncryption: true });
-                wasHeaderRepaired = true;
-=======
             const startsWithPdf = uint8.length >= 5 && uint8[0] === 0x25 && uint8[1] === 0x50 && uint8[2] === 0x44 && uint8[3] === 0x46 && uint8[4] === 0x2D;
             let endStr = '';
             const startIdx = Math.max(0, uint8.length - 1024);
@@ -337,59 +301,10 @@
                 const fixedBuffer = attemptToFixPdfHeader(arrayBuffer);
                 if (!fixedBuffer) throw new Error("PDF header missing or unrecoverable.");
                 pdfDoc = await PDFLib.PDFDocument.load(fixedBuffer);
->>>>>>> parent of 218c03a (Fix checker)
             }
 
-            if (originalPdfDoc.getPageCount() === 0) throw new Error("The PDF contains no valid pages.");
+            if (pdfDoc.getPageCount() === 0) throw new Error("The PDF contains no valid pages.");
 
-<<<<<<< HEAD
-            // We save the parsed document to an intermediate buffer to ensure
-            // the structure is readable and any header fixes are applied.
-            const intermediateBytes = await originalPdfDoc.save();
-
-            // --- THE "VECTOR PRINT" STRATEGY ---
-            // Instead of copying pages (which inherits hidden, WAF-triggering metadata 
-            // like AcroForms and corrupted StructTreeRoots), we EMBED the pages.
-            // This acts like "Print to PDF": it extracts ONLY the visual layer 
-            // (images, vectors, and selectable text) and stamps it onto a brand new, 
-            // virgin PDF structure. The result is completely sanitized.
-
-            const cleanPdfDoc = await PDFLib.PDFDocument.create();
-            
-            // Embed the pages as Form XObjects (pure visual elements)
-            const embeddedPages = await cleanPdfDoc.embedPdf(intermediateBytes);
-
-            for (let i = 0; i < embeddedPages.length; i++) {
-                const embeddedPage = embeddedPages[i];
-                
-                // Create a new blank page matching the exact dimensions of the original
-                const newPage = cleanPdfDoc.addPage([embeddedPage.width, embeddedPage.height]);
-                
-                // Draw ("stamp") the embedded visual page onto the new blank page
-                newPage.drawPage(embeddedPage, {
-                    x: 0,
-                    y: 0,
-                    width: embeddedPage.width,
-                    height: embeddedPage.height,
-                });
-            }
-
-            // Spoof metadata to mimic a clean, trusted Word export
-            cleanPdfDoc.setTitle('Sanitized Document');
-            cleanPdfDoc.setCreator('Microsoft® Word 2016');
-            cleanPdfDoc.setProducer('Microsoft® Word 2016');
-
-            // Save using classic PDF structure (useObjectStreams: false) for ultimate compatibility
-            const savedBytes = await cleanPdfDoc.save({ useObjectStreams: false });
-            result.finalBlob = new Blob([savedBytes], { type: 'application/pdf' });
-
-            if (wasHeaderRepaired) {
-                result.status = 'fixed';
-                result.message = 'Repaired header and performed "Vector Print" to bypass WAF.';
-            } else {
-                result.status = 'standardized';
-                result.message = 'Performed "Vector Print": kept text accessible but purged structural bloat.';
-=======
             const savedBytes = await pdfDoc.save();
             result.finalBlob = new Blob([savedBytes], { type: 'application/pdf' });
 
@@ -399,7 +314,6 @@
             } else {
                 result.status = 'standardized';
                 result.message = 'File read and standardized for maximum compatibility.';
->>>>>>> parent of 218c03a (Fix checker)
             }
         }
 
@@ -526,7 +440,7 @@
                 if (fileObj.status !== 'invalid') {
                     const url = URL.createObjectURL(fileObj.finalBlob);
                     downloadBtn = `
-                            <a href="${url}" download="${fileObj.name}" class="inline-flex items-center justify-center w-10 h-10 rounded-full bg-slate-100 hover:bg-brand-blue hover:text-white dark:bg-slate-700 dark:hover:bg-brand-blue transition-colors group" title="Download fixed file">
+                            <a href="${url}" download="ckf_ready_${fileObj.name}" class="inline-flex items-center justify-center w-10 h-10 rounded-full bg-slate-100 hover:bg-brand-blue hover:text-white dark:bg-slate-700 dark:hover:bg-brand-blue transition-colors group" title="Download fixed file">
                                 <i class="ph ph-download-simple text-lg"></i>
                             </a>
                         `;
