@@ -285,69 +285,68 @@
             // Header check: File MUST start with %PDF- at byte 0
             const startsWithPdf = uint8.length >= 5 && uint8[0] === 0x25 && uint8[1] === 0x50 && uint8[2] === 0x44 && uint8[3] === 0x46 && uint8[4] === 0x2D;
 
-            let pdfDoc;
+            let originalPdfDoc;
             let wasHeaderRepaired = false;
 
             try {
                 if (!startsWithPdf) throw new Error("Missing %PDF- header");
-                pdfDoc = await PDFLib.PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+                originalPdfDoc = await PDFLib.PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
             } catch (e) {
-                // Emergency header fix for corrupted files
+                // Emergency header fix for severely corrupted files
                 const fixedBuffer = attemptToFixPdfHeader(arrayBuffer);
                 if (!fixedBuffer) throw new Error("PDF header missing or unrecoverable.");
-                pdfDoc = await PDFLib.PDFDocument.load(fixedBuffer, { ignoreEncryption: true });
+                originalPdfDoc = await PDFLib.PDFDocument.load(fixedBuffer, { ignoreEncryption: true });
                 wasHeaderRepaired = true;
             }
 
-            if (pdfDoc.getPageCount() === 0) throw new Error("The PDF contains no valid pages.");
+            if (originalPdfDoc.getPageCount() === 0) throw new Error("The PDF contains no valid pages.");
 
-            // --- THE "FLATTEN & SCRUB" STRATEGY ---
-            
-            // 1. Flatten AcroForms & Signature Widgets (The QR-Code fix)
-            // This takes the visual appearance of the QR-code (which is a digital signature widget)
-            // and permanently "stamps" it onto the page as a flat vector/image graphic.
-            // It then automatically destroys the interactive/cryptographic payload that triggers WAF 403 errors.
-            try {
-                const form = pdfDoc.getForm();
-                form.flatten();
-            } catch (flattenError) {
-                console.warn("Could not flatten form/signatures:", flattenError);
-            }
+            // --- THE TRUE "SAVE AS" STRATEGY (Garbage Collection) ---
+            // To completely bypass the WAF (403 Forbidden), we cannot just hide the annotations.
+            // We must prevent the malicious/cryptographic payloads (QR-codes, signatures) 
+            // from ever being copied into the new file.
+            // We do this by severing the references in the ORIGINAL document BEFORE copying.
 
-            // 2. Deep Scrubbing of dangerous dictionaries
-            // Now that the QR-code is just a safe, flat drawing, we forcefully delete 
-            // the metadata arrays that strict Web Application Firewalls hate.
             try {
-                // Remove any remaining Annotations (Links, Popups, etc.) that WAFs might flag
-                const pages = pdfDoc.getPages();
+                // 1. Sever Catalog-level bloat (Signatures, OCR Trees, Metadata)
+                originalPdfDoc.catalog.delete(PDFLib.PDFName.of('AcroForm'));
+                originalPdfDoc.catalog.delete(PDFLib.PDFName.of('StructTreeRoot'));
+                originalPdfDoc.catalog.delete(PDFLib.PDFName.of('Metadata'));
+                originalPdfDoc.catalog.delete(PDFLib.PDFName.of('Outlines'));
+
+                // 2. Sever Page-level bloat (This destroys the QR-Code connection)
+                const pages = originalPdfDoc.getPages();
                 for (let i = 0; i < pages.length; i++) {
                     pages[i].node.delete(PDFLib.PDFName.of('Annots'));
                     pages[i].node.delete(PDFLib.PDFName.of('PieceInfo'));
                 }
-
-                // Remove internal Metadata and Tagged Structure (often triggers WAF false positives)
-                pdfDoc.catalog.delete(PDFLib.PDFName.of('Metadata'));
-                pdfDoc.catalog.delete(PDFLib.PDFName.of('StructTreeRoot'));
-                pdfDoc.catalog.delete(PDFLib.PDFName.of('PieceInfo'));
-            } catch (cleanupError) {
-                console.warn("Cleanup step skipped:", cleanupError);
+            } catch (err) {
+                console.warn("Reference severing skipped:", err);
             }
 
-            // Spoof metadata to mimic a clean, safe standard export
-            pdfDoc.setTitle('Sanitized Document');
-            pdfDoc.setCreator('Microsoft® Word 2016');
-            pdfDoc.setProducer('Microsoft® Word 2016');
+            // 3. Create a brand new, virgin PDF
+            const cleanPdfDoc = await PDFLib.PDFDocument.create();
 
-            // Save WITHOUT Object Streams to strip Linearization and ensure maximum classic compatibility
-            const savedBytes = await pdfDoc.save({ useObjectStreams: false });
+            // 4. Copy pages. Because we severed the links to 'Annots' and 'AcroForm' above, 
+            // pdf-lib's copyPages() will NOT copy the toxic cryptographic payloads into the new context!
+            const copiedPages = await cleanPdfDoc.copyPages(originalPdfDoc, originalPdfDoc.getPageIndices());
+            copiedPages.forEach((page) => cleanPdfDoc.addPage(page));
+
+            // 5. Spoof metadata to mimic a clean, trusted Microsoft Word export
+            cleanPdfDoc.setTitle('Sanitized Document');
+            cleanPdfDoc.setCreator('Microsoft® Word 2016');
+            cleanPdfDoc.setProducer('Microsoft® Word 2016');
+
+            // 6. Save as classic PDF without object streams (strips Linearization completely)
+            const savedBytes = await cleanPdfDoc.save({ useObjectStreams: false });
             result.finalBlob = new Blob([savedBytes], { type: 'application/pdf' });
 
             if (wasHeaderRepaired) {
                 result.status = 'fixed';
-                result.message = 'Repaired header, flattened signature/QR-code, and scrubbed metadata.';
+                result.message = 'Repaired header and rebuilt file from scratch (True Save-As).';
             } else {
                 result.status = 'standardized';
-                result.message = 'Flattened signature/QR-code into a static image and scrubbed metadata.';
+                result.message = 'Rebuilt PDF from scratch, abandoning all signatures and hidden WAF triggers.';
             }
         }
 
