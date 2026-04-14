@@ -238,10 +238,24 @@
         }
 
         async function processSingleFile(file) {
+            // --- NEW: Filename Sanitization ---
+            // CKFinder notoriously blocks files with multiple dots in the name (e.g., "file.12.3.pdf")
+            // treating them as double-extension security risks.
+            const originalName = file.name;
+            const lastDotIndex = originalName.lastIndexOf('.');
+            let safeFileName = originalName;
+            
+            if (lastDotIndex !== -1) {
+                const nameBase = originalName.substring(0, lastDotIndex);
+                const extension = originalName.substring(lastDotIndex);
+                // Replace all dots in the base name with underscores
+                safeFileName = nameBase.replace(/\./g, '_') + extension;
+            }
+
             const result = {
-                name: file.name,
+                name: safeFileName, // Use the sanitized name
                 originalFile: file,
-                finalBlob: file,
+                finalBlob: file, 
                 status: 'fine',
                 message: ''
             };
@@ -252,7 +266,7 @@
                 return result;
             }
 
-            const nameLow = file.name.toLowerCase();
+            const nameLow = safeFileName.toLowerCase();
             const isPdf = nameLow.endsWith('.pdf');
             const isImage = nameLow.match(/\.(jpg|jpeg|png|webp)$/);
             const isArchive = nameLow.match(/\.(zip|docx|xlsx|pptx)$/);
@@ -301,17 +315,23 @@
 
             if (originalPdfDoc.getPageCount() === 0) throw new Error("The PDF contains no valid pages.");
 
-            // *** THE ULTIMATE FIX: The "Print to PDF" approach ***
-            // Instead of saving the original bloated file, we create a pristine, blank PDF.
+            // Create a pristine, blank PDF
             const cleanPdfDoc = await PDFLib.PDFDocument.create();
 
-            // Copy ONLY the visible pages from the original to the new document.
-            // This automatically strips out all hidden garbage, orphaned objects,
-            // complex metadata, and broken digital signature wrappers that parsers hate.
+            // Copy ONLY the visible pages
             const copiedPages = await cleanPdfDoc.copyPages(originalPdfDoc, originalPdfDoc.getPageIndices());
-            copiedPages.forEach((page) => cleanPdfDoc.addPage(page));
+            
+            copiedPages.forEach((page) => {
+                // --- NEW: Deep Annotation & Hidden Layer Scrubbing ---
+                // CKFinder's security scanners often block PDFs containing OCR hidden text layers,
+                // invisible annotations, or proprietary Adobe data.
+                page.node.delete(PDFLib.PDFName.of('Annots'));
+                page.node.delete(PDFLib.PDFName.of('PieceInfo'));
+                
+                cleanPdfDoc.addPage(page);
+            });
 
-            // Set safe, clean metadata to overwrite any existing corrupted ones
+            // Set safe, clean metadata
             cleanPdfDoc.setTitle('Sanitized Document');
             cleanPdfDoc.setProducer('File Validator Tool');
 
@@ -322,10 +342,10 @@
             // Status Messaging
             if (wasHeaderRepaired) {
                 result.status = 'fixed';
-                result.message = 'Repaired corrupted header and performed deep structural clean.';
+                result.message = 'Repaired header, scrubbed hidden layers, and sanitized filename.';
             } else {
                 result.status = 'standardized';
-                result.message = 'Performed deep structural clean (stripped hidden objects and metadata).';
+                result.message = 'Scrubbed hidden metadata/annotations and sanitized filename.';
             }
         }
 
