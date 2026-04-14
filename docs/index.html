@@ -285,67 +285,69 @@
             // Header check: File MUST start with %PDF- at byte 0
             const startsWithPdf = uint8.length >= 5 && uint8[0] === 0x25 && uint8[1] === 0x50 && uint8[2] === 0x44 && uint8[3] === 0x46 && uint8[4] === 0x2D;
 
-            let originalPdfDoc;
+            let pdfDoc;
             let wasHeaderRepaired = false;
-            let sourceBytes = arrayBuffer;
 
-            // Step 1: Ensure we can read the file (and fix the header if needed)
             try {
                 if (!startsWithPdf) throw new Error("Missing %PDF- header");
-                originalPdfDoc = await PDFLib.PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+                pdfDoc = await PDFLib.PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
             } catch (e) {
-                // Emergency header fix for severely corrupted files
+                // Emergency header fix for corrupted files
                 const fixedBuffer = attemptToFixPdfHeader(arrayBuffer);
                 if (!fixedBuffer) throw new Error("PDF header missing or unrecoverable.");
-                originalPdfDoc = await PDFLib.PDFDocument.load(fixedBuffer, { ignoreEncryption: true });
-                sourceBytes = await originalPdfDoc.save(); // Save the fixed version to use as source
+                pdfDoc = await PDFLib.PDFDocument.load(fixedBuffer, { ignoreEncryption: true });
                 wasHeaderRepaired = true;
             }
 
-            if (originalPdfDoc.getPageCount() === 0) throw new Error("The PDF contains no valid pages.");
+            if (pdfDoc.getPageCount() === 0) throw new Error("The PDF contains no valid pages.");
 
-            // --- THE "VECTOR PRINT" STRATEGY (The Ultimate Sandbox) ---
-            // By embedding the original PDF into a new one, we extract ONLY the visual appearance
-            // (including the visual QR code of the digital signature) but we completely abandon the
-            // underlying interactive dictionaries, cryptographic hashes, and AcroForms that trigger WAF 403 errors.
-
-            // 1. Create a pristine, blank PDF
-            const cleanPdfDoc = await PDFLib.PDFDocument.create();
+            // --- THE "FLATTEN & SCRUB" STRATEGY ---
             
-            // 2. Embed the entire original document as flat visual elements
-            const embeddedPages = await cleanPdfDoc.embedPdf(sourceBytes);
-
-            // 3. Loop through ALL pages and stamp them onto the new document
-            for (let i = 0; i < embeddedPages.length; i++) {
-                const embeddedPage = embeddedPages[i];
-                
-                // Create a blank page with the exact dimensions of the original page
-                const newPage = cleanPdfDoc.addPage([embeddedPage.width, embeddedPage.height]);
-                
-                // Draw ("stamp") the visual layer onto the new page
-                newPage.drawPage(embeddedPage, {
-                    x: 0,
-                    y: 0,
-                    width: embeddedPage.width,
-                    height: embeddedPage.height,
-                });
+            // 1. Flatten AcroForms & Signature Widgets (The QR-Code fix)
+            // This takes the visual appearance of the QR-code (which is a digital signature widget)
+            // and permanently "stamps" it onto the page as a flat vector/image graphic.
+            // It then automatically destroys the interactive/cryptographic payload that triggers WAF 403 errors.
+            try {
+                const form = pdfDoc.getForm();
+                form.flatten();
+            } catch (flattenError) {
+                console.warn("Could not flatten form/signatures:", flattenError);
             }
 
-            // Spoof metadata to mimic a standard, safe Word export (highly trusted by Firewalls)
-            cleanPdfDoc.setTitle('Sanitized Document');
-            cleanPdfDoc.setCreator('Microsoft® Word 2016');
-            cleanPdfDoc.setProducer('Microsoft® Word 2016');
+            // 2. Deep Scrubbing of dangerous dictionaries
+            // Now that the QR-code is just a safe, flat drawing, we forcefully delete 
+            // the metadata arrays that strict Web Application Firewalls hate.
+            try {
+                // Remove any remaining Annotations (Links, Popups, etc.) that WAFs might flag
+                const pages = pdfDoc.getPages();
+                for (let i = 0; i < pages.length; i++) {
+                    pages[i].node.delete(PDFLib.PDFName.of('Annots'));
+                    pages[i].node.delete(PDFLib.PDFName.of('PieceInfo'));
+                }
 
-            // Save as classic PDF (useObjectStreams: false) to strip linearization and ensure 100% compatibility
-            const savedBytes = await cleanPdfDoc.save({ useObjectStreams: false });
+                // Remove internal Metadata and Tagged Structure (often triggers WAF false positives)
+                pdfDoc.catalog.delete(PDFLib.PDFName.of('Metadata'));
+                pdfDoc.catalog.delete(PDFLib.PDFName.of('StructTreeRoot'));
+                pdfDoc.catalog.delete(PDFLib.PDFName.of('PieceInfo'));
+            } catch (cleanupError) {
+                console.warn("Cleanup step skipped:", cleanupError);
+            }
+
+            // Spoof metadata to mimic a clean, safe standard export
+            pdfDoc.setTitle('Sanitized Document');
+            pdfDoc.setCreator('Microsoft® Word 2016');
+            pdfDoc.setProducer('Microsoft® Word 2016');
+
+            // Save WITHOUT Object Streams to strip Linearization and ensure maximum classic compatibility
+            const savedBytes = await pdfDoc.save({ useObjectStreams: false });
             result.finalBlob = new Blob([savedBytes], { type: 'application/pdf' });
 
             if (wasHeaderRepaired) {
                 result.status = 'fixed';
-                result.message = 'Repaired header and sandboxed via Vector Print (All pages retained).';
+                result.message = 'Repaired header, flattened signature/QR-code, and scrubbed metadata.';
             } else {
                 result.status = 'standardized';
-                result.message = 'Sandboxed via Vector Print: retained visual QR/text, abandoned cryptographic payload.';
+                result.message = 'Flattened signature/QR-code into a static image and scrubbed metadata.';
             }
         }
 
