@@ -34,13 +34,6 @@
     <!-- JSZip for zipping files -->
     <script src="jszip.min.js"></script>
 
-    <!--PDF.js per la Rasterizzazione (Effetto Word) -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-    <script>
-        // Configurazione del worker per PDF.js
-        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-    </script>
-
     <style>
         /* Custom scrollbar for the table container */
         .custom-scrollbar::-webkit-scrollbar {
@@ -306,67 +299,71 @@
 
         async function handlePdfValidation(file, result) {
             const arrayBuffer = await file.arrayBuffer();
-            
-            // --- THE "WORD EXPORT" STRATEGY (Deep Rasterization) ---
-            // We use PDF.js to render the PDF into flat images, then pdf-lib to build a 
-            // brand new, 100% virgin PDF. This strips ALL hidden data, OCR, signatures, 
-            // bypasses WAF 403 blocks, and significantly compresses the file.
-            
+            const uint8 = new Uint8Array(arrayBuffer);
+
+            // Header check: File MUST start with %PDF- at byte 0
+            const startsWithPdf = uint8.length >= 5 && uint8[0] === 0x25 && uint8[1] === 0x50 && uint8[2] === 0x44 && uint8[3] === 0x46 && uint8[4] === 0x2D;
+
+            let pdfDoc;
+            let wasHeaderRepaired = false;
+
             try {
-                // 1. Load the PDF with PDF.js (highly tolerant to corruption)
-                const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-                const pdf = await loadingTask.promise;
-                const totalPages = pdf.numPages;
-                
-                if (totalPages === 0) throw new Error("The PDF contains no valid pages.");
+                if (!startsWithPdf) throw new Error("Missing %PDF- header");
+                // Load the document normally, preserving all text, vector graphics, and accessibility
+                pdfDoc = await PDFLib.PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+            } catch (e) {
+                // Emergency header fix for corrupted files
+                const fixedBuffer = attemptToFixPdfHeader(arrayBuffer);
+                if (!fixedBuffer) throw new Error("PDF header missing or unrecoverable.");
+                pdfDoc = await PDFLib.PDFDocument.load(fixedBuffer, { ignoreEncryption: true });
+                wasHeaderRepaired = true;
+            }
 
-                // 2. Create a pristine, blank PDF with pdf-lib
-                const cleanPdfDoc = await PDFLib.PDFDocument.create();
-                
-                // Set metadata to mimic a standard Microsoft Word export (trusted by WAFs)
-                cleanPdfDoc.setTitle('Sanitized Document');
-                cleanPdfDoc.setProducer('Microsoft® Word 2016'); 
-                cleanPdfDoc.setCreator('Microsoft® Word 2016');
+            if (pdfDoc.getPageCount() === 0) throw new Error("The PDF contains no valid pages.");
 
-                // 3. Render each page to an image and embed it
-                for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-                    const page = await pdf.getPage(pageNum);
-                    
-                    // Scale 1.5 gives a great balance between readability and size reduction
-                    const viewport = page.getViewport({ scale: 1.5 }); 
-                    
-                    // Render to an off-screen canvas
-                    const canvas = document.createElement('canvas');
-                    const ctx = canvas.getContext('2d');
-                    canvas.width = viewport.width;
-                    canvas.height = viewport.height;
-                    
-                    await page.render({ canvasContext: ctx, viewport: viewport }).promise;
-                    
-                    // Convert to JPEG (0.8 quality drastically reduces size, destroying hidden malicious bytes)
-                    const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.8);
-                    
-                    // Embed JPEG in the new PDF
-                    const pdfImage = await cleanPdfDoc.embedJpg(jpegDataUrl);
-                    const newPage = cleanPdfDoc.addPage([pdfImage.width, pdfImage.height]);
-                    newPage.drawImage(pdfImage, {
-                        x: 0,
-                        y: 0,
-                        width: pdfImage.width,
-                        height: pdfImage.height,
-                    });
-                }
+            // --- THE "DEEP CLEAN & SPOOF" STRATEGY ---
+            // WAFs (Web Application Firewalls) often return 403 Forbidden because they parse 
+            // the internal XML Metadata (XMP), StructTreeRoots, or AcroForms of the PDF and 
+            // falsely flag them as XSS or SQLi attempts. 
+            // Here we surgically delete these problematic dictionaries while keeping the 
+            // visible content and text accessibility 100% intact.
 
-                // Save as a classic PDF
-                const savedBytes = await cleanPdfDoc.save({ useObjectStreams: false });
-                result.finalBlob = new Blob([savedBytes], { type: 'application/pdf' });
+            try {
+                // 1. Delete XML Metadata stream (High trigger rate for WAFs)
+                pdfDoc.catalog.delete(PDFLib.PDFName.of('Metadata'));
                 
+                // 2. Delete StructTreeRoot (OCR accessibility tags, often corrupted in scans)
+                pdfDoc.catalog.delete(PDFLib.PDFName.of('StructTreeRoot'));
+
+                // 3. Delete AcroForms (Interactive elements and pending digital signatures)
+                pdfDoc.catalog.delete(PDFLib.PDFName.of('AcroForm'));
+                
+                // 4. Delete Outlines (Bookmarks, sometimes contain weird characters)
+                pdfDoc.catalog.delete(PDFLib.PDFName.of('Outlines'));
+            } catch (cleanupError) {
+                console.warn("Some dictionaries could not be deleted:", cleanupError);
+            }
+
+            // --- WAF SPOOFING ---
+            // Firewalls often whitelist or trust PDFs generated by standard Microsoft engines.
+            // We spoof the metadata to make it look like a clean Word export.
+            pdfDoc.setTitle(file.name.replace(/[^a-zA-Z0-9]/g, '_'));
+            pdfDoc.setAuthor('User');
+            pdfDoc.setSubject('Sanitized Document');
+            pdfDoc.setCreator('Microsoft® Word 2016');
+            pdfDoc.setProducer('Microsoft® Word 2016');
+
+            // Save the document using object streams (standard modern PDF compression)
+            const savedBytes = await pdfDoc.save({ useObjectStreams: true });
+            result.finalBlob = new Blob([savedBytes], { type: 'application/pdf' });
+
+            // Status Messaging
+            if (wasHeaderRepaired) {
+                result.status = 'fixed';
+                result.message = 'Repaired header, scrubbed XML metadata, text kept accessible.';
+            } else {
                 result.status = 'standardized';
-                result.message = 'PDF rasterized: stripped hidden data, bypassed WAF, and reduced size.';
-
-            } catch (error) {
-                console.error("Rasterization failed:", error);
-                throw new Error("Could not rasterize and rebuild the PDF.");
+                result.message = 'Scrubbed XML/XMP metadata and applied WAF-friendly signatures (Text is accessible).';
             }
         }
 
