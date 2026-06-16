@@ -330,8 +330,10 @@
                     const renderContext = {
                         canvasContext: ctx,
                         viewport: viewportRender,
+                        annotationMode: 1,
+                        renderInteractiveForms: true,
                         intent: 'print', // 'print' forza spesso la visualizzazione di timbri e firme
-                        annotationMode: pdfjsLib.AnnotationMode.ENABLE // Assicuriamoci che siano abilitate
+                        //annotationMode: pdfjsLib.AnnotationMode.ENABLE // Assicuriamoci che siano abilitate
                     };
                     await page.render(renderContext).promise;
 
