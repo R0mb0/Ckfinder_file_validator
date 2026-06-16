@@ -298,7 +298,10 @@
 
             try {
                 // 1. Load the original PDF with PDF.js (Highly tolerant to corruption)
-                const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+                const loadingTask = pdfjsLib.getDocument({ 
+                    data: arrayBuffer,
+                    enableXfa: true // <-- FONDAMENTALE: costringe PDF.js a renderizzare i dati inseriti nei moduli dell'Agenzia delle Entrate
+                });
                 const pdf = await loadingTask.promise;
                 const totalPages = pdf.numPages;
                 const metadata = await pdf.getMetadata();
@@ -333,8 +336,13 @@
                     await page.render(renderContext).promise;
 
                     // Compress as JPEG to drop file size significantly
+                    // Compress as JPEG to drop file size significantly
                     const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.85);
-                    const pdfImage = await cleanPdfDoc.embedJpg(jpegDataUrl);
+
+                    // MODIFICA: Tagliamo il prefisso "data:image/jpeg;base64," per passare a pdf-lib solo i dati puri.
+                    // Questo evita il crash da "invalid magic number" sui PDF complessi e pieni di vettori.
+                    const cleanBase64 = jpegDataUrl.split(',')[1];
+                    const pdfImage = await cleanPdfDoc.embedJpg(cleanBase64);
 
                     // --- LAYER 2: TEXT EXTRACTION (The Accessibility Layer) ---
                     // We extract the pure text coordinates from the original file.
