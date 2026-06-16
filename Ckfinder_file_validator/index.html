@@ -34,9 +34,9 @@
     <!-- JSZip for zipping files -->
     <script src="jszip.min.js"></script>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="pdf.min.js"></script>
     <script>
-        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
     </script>
 
     <style>
@@ -294,9 +294,18 @@
 
             try {
                 // 1. Load the original PDF with PDF.js (Highly tolerant to corruption)
-                const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+                const loadingTask = pdfjsLib.getDocument({
+                    data: arrayBuffer,
+                    enableXfa: true // <-- FONDAMENTALE: costringe PDF.js a renderizzare i dati inseriti nei moduli dell'Agenzia delle Entrate
+                });
                 const pdf = await loadingTask.promise;
                 const totalPages = pdf.numPages;
+                const metadata = await pdf.getMetadata();
+                const info = metadata.info || {};
+                const docTitle = info.Title || 'Sanitized Document';
+                const docAuthor = info.Author || 'Unknown';
+                const docSubject = info.Subject || '';
+                const docCreator = info.Creator || 'Microsoft® Word 2016';
 
                 if (totalPages === 0) throw new Error("The PDF contains no valid pages.");
 
@@ -305,7 +314,7 @@
                     const page = await pdf.getPage(pageNum);
 
                     // --- LAYER 1: RASTERIZATION (The Visual Layer) ---
-                    // We photograph the page (scale 2.0 for crisp quality). 
+                    // We photograph the page (scale 2.0 for crisp quality).
                     // This permanently destroys toxic OCR dictionaries, signatures, and QR payloads.
                     const viewportRender = page.getViewport({ scale: 2.0 });
                     const canvas = document.createElement('canvas');
@@ -313,11 +322,23 @@
                     canvas.width = viewportRender.width;
                     canvas.height = viewportRender.height;
 
-                    await page.render({ canvasContext: ctx, viewport: viewportRender }).promise;
+                    // --- MODIFICA: Forziamo il rendering delle annotazioni (incluse firme visive) ---
+                    const renderContext = {
+                        canvasContext: ctx,
+                        viewport: viewportRender,
+                        intent: 'print', // 'print' forza spesso la visualizzazione di timbri e firme
+                        annotationMode: pdfjsLib.AnnotationMode.ENABLE // Assicuriamoci che siano abilitate
+                    };
+                    await page.render(renderContext).promise;
 
                     // Compress as JPEG to drop file size significantly
+                    // Compress as JPEG to drop file size significantly
                     const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.85);
-                    const pdfImage = await cleanPdfDoc.embedJpg(jpegDataUrl);
+
+                    // MODIFICA: Tagliamo il prefisso "data:image/jpeg;base64," per passare a pdf-lib solo i dati puri.
+                    // Questo evita il crash da "invalid magic number" sui PDF complessi e pieni di vettori.
+                    const cleanBase64 = jpegDataUrl.split(',')[1];
+                    const pdfImage = await cleanPdfDoc.embedJpg(cleanBase64);
 
                     // --- LAYER 2: TEXT EXTRACTION (The Accessibility Layer) ---
                     // We extract the pure text coordinates from the original file.
@@ -362,9 +383,11 @@
                 }
 
                 // Spoof metadata to mimic a clean Word export (Trusted by WAFs)
-                cleanPdfDoc.setTitle('Sanitized Document');
-                cleanPdfDoc.setCreator('Microsoft® Word 2016');
-                cleanPdfDoc.setProducer('Microsoft® Word 2016');
+                cleanPdfDoc.setTitle(docTitle);
+                cleanPdfDoc.setAuthor(docAuthor);
+                cleanPdfDoc.setSubject(docSubject);
+                cleanPdfDoc.setCreator(docCreator);
+                cleanPdfDoc.setProducer('CKFinder Sanitizer Tool');
 
                 // Save as a classic, flat PDF without object streams
                 const savedBytes = await cleanPdfDoc.save({ useObjectStreams: false });
