@@ -319,9 +319,10 @@
                 cleanPdfDoc = await PDFLib.PDFDocument.create();
             }
 
+            // Create a brand new, virgin PDF document from absolute scratch
+            cleanPdfDoc = await PDFLib.PDFDocument.create();
             // Embed a standard, 100% safe font
             const helveticaFont = await cleanPdfDoc.embedFont(PDFLib.StandardFonts.Helvetica);
-            // --- FINE MODIFICA 1 ---
 
             try {
                 // 1. Load the original PDF with PDF.js (Highly tolerant to corruption)
@@ -380,7 +381,7 @@
                     const viewportOriginal = page.getViewport({ scale: 1.0 });
 
                     // Create the new page matching original physical dimensions
-                    const newPage = isSigned ? cleanPdfDoc.getPage(pageNum - 1) : cleanPdfDoc.addPage([viewportOriginal.width, viewportOriginal.height]);
+                    const newPage = cleanPdfDoc.addPage([viewportOriginal.width, viewportOriginal.height]);
 
                     // Stamp the visual JPEG onto the background
                     newPage.drawImage(pdfImage, {
@@ -415,6 +416,92 @@
                         }
                     }
                 }
+
+                // --- MODIFICA CHIRURGICA DEFINITIVA: INIEZIONE FIRME (PUNTO 2) ---
+                const originalPdfDoc = await PDFLib.PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
+                const sigDicts = [];
+                
+                // 1. Troviamo i dizionari firma con sicurezza
+                originalPdfDoc.context.enumerateIndirectObjects().forEach(([ref, obj]) => {
+                    if (obj instanceof PDFLib.PDFDict) {
+                        const isSig = obj.get(PDFLib.PDFName.of('Type')) === PDFLib.PDFName.of('Sig');
+                        const isSigField = obj.get(PDFLib.PDFName.of('FT')) === PDFLib.PDFName.of('Sig');
+                        if (isSig) {
+                            sigDicts.push(obj);
+                        } else if (isSigField && obj.has(PDFLib.PDFName.of('V'))) {
+                            const vObj = originalPdfDoc.context.lookup(obj.get(PDFLib.PDFName.of('V')));
+                            if (vObj instanceof PDFLib.PDFDict && !sigDicts.includes(vObj)) sigDicts.push(vObj);
+                        }
+                    }
+                });
+
+                if (sigDicts.length > 0 && totalPages > 0) {
+                    const newContext = cleanPdfDoc.context;
+                    
+                    // Creiamo il form per attivare il pannello di Adobe
+                    const acroForm = newContext.obj({ Fields: [], SigFlags: 3 });
+                    cleanPdfDoc.catalog.set(PDFLib.PDFName.of('AcroForm'), acroForm);
+                    const fieldsArray = acroForm.get(PDFLib.PDFName.of('Fields'));
+
+                    // Funzione per risolvere i puntatori indiretti rotti
+                    const resolve = (dict, key) => {
+                        const val = dict.get(PDFLib.PDFName.of(key));
+                        return val instanceof PDFLib.PDFRef ? originalPdfDoc.context.lookup(val) : val;
+                    };
+
+                    sigDicts.forEach((sigDict, index) => {
+                        // Estraiamo in modo sicuro i numeri del ByteRange
+                        let safeByteRange = newContext.obj([0, 0, 0, 0]);
+                        const origBR = resolve(sigDict, 'ByteRange');
+                        if (origBR instanceof PDFLib.PDFArray) {
+                            const numbers = [];
+                            for (let i = 0; i < origBR.size(); i++) {
+                                const num = origBR.get(i);
+                                if (num instanceof PDFLib.PDFNumber) numbers.push(num.asNumber());
+                            }
+                            if (numbers.length > 0) safeByteRange = newContext.obj(numbers);
+                        }
+
+                        // Cloniamo la firma con TUTTI i parametri esatti richiesti da Adobe
+                        const clonedSigDict = newContext.obj({
+                            Type: 'Sig',
+                            Filter: resolve(sigDict, 'Filter'),
+                            SubFilter: resolve(sigDict, 'SubFilter'),
+                            Name: resolve(sigDict, 'Name'),
+                            M: resolve(sigDict, 'M'),
+                            Contents: resolve(sigDict, 'Contents'),
+                            ByteRange: safeByteRange, // <--- LA CHIAVE MANCANTE!
+                            Reason: resolve(sigDict, 'Reason'),
+                            Location: resolve(sigDict, 'Location'),
+                            ContactInfo: resolve(sigDict, 'ContactInfo'),
+                        });
+                        const sigRef = newContext.register(clonedSigDict);
+
+                        // Creiamo il campo invisibile sulla pagina 1
+                        const sigField = newContext.obj({
+                            FT: 'Sig',
+                            Type: 'Annot',
+                            Subtype: 'Widget',
+                            T: PDFLib.PDFString.of('FirmaRecuperata_' + index),
+                            V: sigRef,
+                            Rect: [0, 0, 0, 0], 
+                            P: cleanPdfDoc.getPage(0).ref,
+                            F: 132
+                        });
+                        const fieldRef = newContext.register(sigField);
+                        
+                        // Leghiamo il campo al documento
+                        fieldsArray.push(fieldRef);
+                        const firstPage = cleanPdfDoc.getPage(0);
+                        let annots = firstPage.node.get(PDFLib.PDFName.of('Annots'));
+                        if (!annots) {
+                            annots = newContext.obj([]);
+                            firstPage.node.set(PDFLib.PDFName.of('Annots'), annots);
+                        }
+                        annots.push(fieldRef);
+                    });
+                }
+                // --- FINE MODIFICA CHIRURGICA DEFINITIVA ---
 
                 // Spoof metadata to mimic a clean Word export (Trusted by WAFs)
                 cleanPdfDoc.setTitle(docTitle);
