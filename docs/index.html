@@ -278,6 +278,8 @@
                 result.message = err.message || 'File processing failed due to severe corruption.';
             }
 
+            result.originalFile = null;
+
             return result;
         }
 
@@ -300,7 +302,8 @@
                 // 1. Load the original PDF with PDF.js (Highly tolerant to corruption)
                 const loadingTask = pdfjsLib.getDocument({ 
                     data: arrayBuffer,
-                    enableXfa: true // <-- FONDAMENTALE: costringe PDF.js a renderizzare i dati inseriti nei moduli dell'Agenzia delle Entrate
+                    enableXfa: true,
+                    isEvalSupported: false // Modifica chirurgica: disabilita l'esecuzione di JavaScript malevolo o problematico nel PDF originale
                 });
                 const pdf = await loadingTask.promise;
                 const totalPages = pdf.numPages;
@@ -330,10 +333,10 @@
                     const renderContext = {
                         canvasContext: ctx,
                         viewport: viewportRender,
-                        annotationMode: 1,
-                        renderInteractiveForms: true,
-                        intent: 'print', // 'print' forza spesso la visualizzazione di timbri e firme
-                        //annotationMode: pdfjsLib.AnnotationMode.ENABLE // Assicuriamoci che siano abilitate
+                        intent: 'print', // <-- FONDAMENTALE: Usa 'print' per forzare la comparsa di firme vettoriali e timbri "piatti"
+                        annotationMode: pdfjsLib.AnnotationMode.ENABLE, // <-- FONDAMENTALE: Abilita il layer delle annotazioni
+                        enableWebGL: false, 
+                        renderInteractiveForms: true
                     };
                     await page.render(renderContext).promise;
 
