@@ -393,7 +393,7 @@
 
                 // --- MODIFICA CHIRURGICA: ESTRAZIONE E INIEZIONE FIRME LOGICHE (PUNTO 2) ---
                 // 1. Carichiamo il PDF originale "dietro le quinte" con pdf-lib per leggere i suoi oggetti grezzi
-                const originalPdfDoc = await PDFLib.PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+                const originalPdfDoc = await PDFLib.PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
                 const sigDicts = [];
                 
                 // 2. Scansioniamo l'intero documento cercando gli oggetti di tipo Firma (/Type /Sig)
