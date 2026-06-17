@@ -293,10 +293,35 @@
                 throw new Error("PDF.js library is missing. Please add it to the <head>.");
             }
 
-            // Create a brand new, virgin PDF document from absolute scratch
-            const cleanPdfDoc = await PDFLib.PDFDocument.create();
+            // --- INIZIO MODIFICA 1: BIFORCAZIONE LOGICA PER LE FIRME ---
+            let cleanPdfDoc;
+            let isSigned = false;
+            
+            try {
+                // Facciamo una copia del buffer per non far arrabbiare PDF.js (Detached ArrayBuffer fix)
+                const checkDoc = await PDFLib.PDFDocument.load(arrayBuffer.slice(0), { ignoreEncryption: true });
+                
+                // Scansioniamo per vedere se c'è almeno un certificato di firma
+                checkDoc.context.enumerateIndirectObjects().forEach(([ref, obj]) => {
+                    if (obj instanceof PDFLib.PDFDict && obj.get(PDFLib.PDFName.of('Type')) === PDFLib.PDFName.of('Sig')) {
+                        isSigned = true;
+                    }
+                });
+                
+                if (isSigned) {
+                    // SE E' FIRMATO: usiamo il documento originale come "tela" per preservare la barra di Adobe
+                    cleanPdfDoc = checkDoc; 
+                } else {
+                    // SE NON E' FIRMATO: creiamo un documento vergine da zero (Radical Rebuild classico)
+                    cleanPdfDoc = await PDFLib.PDFDocument.create(); 
+                }
+            } catch(e) {
+                cleanPdfDoc = await PDFLib.PDFDocument.create();
+            }
+
             // Embed a standard, 100% safe font
             const helveticaFont = await cleanPdfDoc.embedFont(PDFLib.StandardFonts.Helvetica);
+            // --- FINE MODIFICA 1 ---
 
             try {
                 // 1. Load the original PDF with PDF.js (Highly tolerant to corruption)
@@ -355,7 +380,7 @@
                     const viewportOriginal = page.getViewport({ scale: 1.0 });
 
                     // Create the new page matching original physical dimensions
-                    const newPage = cleanPdfDoc.addPage([viewportOriginal.width, viewportOriginal.height]);
+                    const newPage = isSigned ? cleanPdfDoc.getPage(pageNum - 1) : cleanPdfDoc.addPage([viewportOriginal.width, viewportOriginal.height]);
 
                     // Stamp the visual JPEG onto the background
                     newPage.drawImage(pdfImage, {
@@ -390,69 +415,6 @@
                         }
                     }
                 }
-
-                // --- MODIFICA CHIRURGICA: ESTRAZIONE E INIEZIONE FIRME LOGICHE (PUNTO 2) ---
-                // 1. Carichiamo il PDF originale "dietro le quinte" con pdf-lib per leggere i suoi oggetti grezzi
-                const originalPdfDoc = await PDFLib.PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
-                const sigDicts = [];
-                
-                // 2. Scansioniamo l'intero documento cercando gli oggetti di tipo Firma (/Type /Sig)
-                originalPdfDoc.context.enumerateIndirectObjects().forEach(([ref, obj]) => {
-                    if (obj instanceof PDFLib.PDFDict && obj.get(PDFLib.PDFName.of('Type')) === PDFLib.PDFName.of('Sig')) {
-                        sigDicts.push(obj); // Trovato il pacchetto con dentro il certificato Aruba/esadecimale!
-                    }
-                });
-
-                if (sigDicts.length > 0 && totalPages > 0) {
-                    const newContext = cleanPdfDoc.context;
-                    
-                    // 3. Creiamo un "AcroForm" di base nel nuovo documento pulito.
-                    // Il flag SigFlags: 3 è il trucco magico che dice ad Acrobat di aprire il Pannello Firme.
-                    const acroForm = newContext.obj({
-                        Fields: [],
-                        SigFlags: 3, 
-                    });
-                    cleanPdfDoc.catalog.set(PDFLib.PDFName.of('AcroForm'), acroForm);
-                    const fieldsArray = acroForm.get(PDFLib.PDFName.of('Fields'));
-
-                    sigDicts.forEach((sigDict, index) => {
-                        // 4. Cloniamo il dizionario della firma estraendo il cuore esadecimale (/Contents)
-                        const clonedSigDict = newContext.obj({
-                            Type: 'Sig',
-                            Filter: sigDict.get(PDFLib.PDFName.of('Filter')),
-                            SubFilter: sigDict.get(PDFLib.PDFName.of('SubFilter')),
-                            Name: sigDict.get(PDFLib.PDFName.of('Name')),
-                            M: sigDict.get(PDFLib.PDFName.of('M')),
-                            Contents: sigDict.get(PDFLib.PDFName.of('Contents')), // Il dump esadecimale che hai visto!
-                        });
-                        const sigRef = newContext.register(clonedSigDict);
-
-                        // 5. Creiamo un campo Firma "Fantasma" (Widget) di dimensione 0x0 
-                        // così non sporca la grafica perfetta che abbiamo generato nel Canvas
-                        const sigField = newContext.obj({
-                            FT: 'Sig',
-                            Type: 'Annot',
-                            Subtype: 'Widget',
-                            T: PDFLib.PDFString.of('FirmaRecuperata_' + index),
-                            V: sigRef,
-                            Rect: [0, 0, 0, 0], 
-                            P: cleanPdfDoc.getPage(0).ref,
-                            F: 132 // Flag di annotazione standard
-                        });
-                        const fieldRef = newContext.register(sigField);
-                        
-                        // 6. Colleghiamo tutto: il campo all'AcroForm e l'annotazione alla Prima Pagina
-                        fieldsArray.push(fieldRef);
-                        const firstPage = cleanPdfDoc.getPage(0);
-                        let annots = firstPage.node.get(PDFLib.PDFName.of('Annots'));
-                        if (!annots) {
-                            annots = newContext.obj([]);
-                            firstPage.node.set(PDFLib.PDFName.of('Annots'), annots);
-                        }
-                        annots.push(fieldRef);
-                    });
-                }
-                // --- FINE MODIFICA CHIRURGICA ---
 
                 // Spoof metadata to mimic a clean Word export (Trusted by WAFs)
                 cleanPdfDoc.setTitle(docTitle);
