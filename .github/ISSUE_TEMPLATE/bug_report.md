@@ -1,29 +1,21 @@
----
-name: Bug report
-about: Report something that isn't working as expected
-title: ''
-labels: bug
-assignees: ''
+## Description
 
----
+What does this PR change, and why?
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+Fixes # (issue, if any)
 
-**Steps to reproduce**
-Steps to reproduce the behavior:
-1. ...
-2. ...
-3. ...
+### Type of change
 
-**Expected behavior**
-A clear and concise description of what you expected to happen.
+Please delete the options that are not relevant.
 
-**Screenshots**
-If applicable, add screenshots to help explain the problem.
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Documentation update
+- [ ] Something else
 
-**Environment**
-Any relevant details about your setup (OS, version, browser, or anything else that might matter for this project).
+## Checklist
 
-**Additional context**
-Anything else useful to know.
+- [ ] This PR covers a single reason for change (not several unrelated fixes bundled together)
+- [ ] I've read the [Contributing guide](../CONTRIBUTING.md)
+- [ ] I've described **why** this change is needed, not just what it changes
+- [ ] I've tested my changes locally
